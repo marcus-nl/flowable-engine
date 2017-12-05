@@ -110,6 +110,68 @@ public class ParallelGatewayTest extends PluggableFlowableTestCase {
         assertEquals("Task C", tasks.get(0).getName());
     }
 
+    @Deployment
+    public void testVariableScopes() {
+        runtimeService.startProcessInstanceByKey("variableScopes");
+        
+        // we now have a task "Task before fork". 
+        TaskQuery query = taskService.createTaskQuery().orderByTaskName().asc();
+        List<org.flowable.task.api.Task> tasks = query.list();
+        assertEquals(1, tasks.size());
+        assertEquals("Task before fork", tasks.get(0).getName());
+
+        // let's set various variables.
+        String taskExecutionId = tasks.get(0).getExecutionId();
+        runtimeService.setVariable(taskExecutionId, "normalVariable1", "normalVariable1-Value"); // will be overwritten in the 1st parallel execution
+        runtimeService.setVariable(taskExecutionId, "normalVariable2", "normalVariable2-Value"); // will be overwritten in the 2nd parallel execution 
+        runtimeService.setVariableLocal(taskExecutionId, "localVariable1", "localVariable1-Value"); // should be hidden but not overwritten by a variable with the same name in the 1st parallel execution
+        runtimeService.setVariableLocal(taskExecutionId, "localVariable2", "localVariable2-Value"); // should be hidden but not overwritten by a variable with the same name in the 2nd parallel execution
+        
+        // completing the task will result in entering the parallel gateway and the creation of 2 parallel tasks
+        taskService.complete(tasks.get(0).getId());
+        tasks = query.list();
+        assertEquals(2, tasks.size());
+        assertEquals("Parallel Task A", tasks.get(0).getName());
+        assertEquals("Parallel Task B", tasks.get(1).getName());
+        
+        // all variables should be visible with their initial values
+        String parallelExecutionId1 = tasks.get(0).getExecutionId();
+        assertEquals("normalVariable1-Value", runtimeService.getVariable(parallelExecutionId1, "normalVariable1"));
+        assertEquals("normalVariable2-Value", runtimeService.getVariable(parallelExecutionId1, "normalVariable2"));
+        assertEquals("localVariable1-Value", runtimeService.getVariable(parallelExecutionId1, "localVariable1"));
+        assertEquals("localVariable2-Value", runtimeService.getVariable(parallelExecutionId1, "localVariable2"));
+        String parallelExecutionId2 = tasks.get(1).getExecutionId();
+        assertEquals("normalVariable1-Value", runtimeService.getVariable(parallelExecutionId2, "normalVariable1"));
+        assertEquals("normalVariable2-Value", runtimeService.getVariable(parallelExecutionId2, "normalVariable2"));
+        //assertEquals("localVariable1-Value", runtimeService.getVariable(parallelExecutionId2, "localVariable1")); // FAILS: null (#1)
+        //assertEquals("localVariable2-Value", runtimeService.getVariable(parallelExecutionId2, "localVariable2")); // FAILS: null (#2)
+        
+        // now let's override some of the variables and set some new ones in the scope of the parallel executions
+        runtimeService.setVariable(parallelExecutionId1, "normalVariable1", "normalVariable1-Value-Overwritten");
+        runtimeService.setVariable(parallelExecutionId2, "normalVariable2", "normalVariable2-Value-Overwritten"); 
+        runtimeService.setVariableLocal(parallelExecutionId1, "localVariable1", "localVariable1-Value-Hidden");
+        runtimeService.setVariableLocal(parallelExecutionId2, "localVariable2", "localVariable2-Value-Hidden");
+        runtimeService.setVariableLocal(parallelExecutionId1, "localVariable3", "localVariable3-Value"); 
+        runtimeService.setVariableLocal(parallelExecutionId2, "localVariable4", "localVariable4-Value"); 
+
+        // completing the tasks will resulting in a joining of the executions and 1 new task
+        taskService.complete(tasks.get(0).getId());
+        taskService.complete(tasks.get(1).getId());
+        tasks = query.list();
+        assertEquals(1, tasks.size());
+        assertEquals("Task after join", tasks.get(0).getName());
+        
+        taskExecutionId = tasks.get(0).getExecutionId();
+        // verify the variables that were overwritten
+        assertEquals("normalVariable1-Value-Overwritten", runtimeService.getVariable(taskExecutionId, "normalVariable1"));
+        assertEquals("normalVariable2-Value-Overwritten", runtimeService.getVariable(taskExecutionId, "normalVariable2"));
+        //assertEquals("localVariable1-Value", runtimeService.getVariable(mainExecutionId, "localVariable1")); // FAILS: null (#3)
+        //assertEquals("localVariable2-Value", runtimeService.getVariable(mainExecutionId, "localVariable2")); // FAILS: localVariable2-Value-Hidden (#4)
+        // these were local to the parallel executions, so should be invisible
+        assertNull(runtimeService.getVariable(taskExecutionId, "localVariable3"));
+        //assertNull(runtimeService.getVariable(mainExecutionId, "localVariable4")); // FAILS: localVariable4-Value (#5)
+    }
+
     /**
      * https://activiti.atlassian.net/browse/ACT-1222
      */
